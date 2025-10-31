@@ -29,7 +29,7 @@ def resource_path(relative_path):
     base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
-VERSION = 2.54
+VERSION = 2.55
 HEADERS = {'User-Agent': 'GW2RPC v{}'.format(VERSION)}
 
 GW2RPC_BASE_URL = "https://gw2rpc.info/api/v2/"
@@ -258,11 +258,11 @@ class GW2RPC:
         region = str(map_info.get("region_id", "thanks_anet"))
 
         position = self.game.get_position()
-        #print("{} {} Region {}".format(map_id, map_name, region))
-        #print("{} {} {}".format(position.x, position.y, position.z))
-        #m_x, m_y = self.convert_mumble_coordinates(map_info, position)
-        #print("Relative: {} {}".format(m_x, m_y))
-        #print("--------------------------")
+        print("{} {} Region {}".format(map_id, map_name, region))
+        print("{} {} {}".format(position.x, position.y, position.z))
+        m_x, m_y = self.convert_mumble_coordinates(map_info, position)
+        print("Relative: {} {}".format(m_x, m_y))
+        print("--------------------------")
         
         if self.registry:
             if region == "26":  #  Fractals of the Mists 
@@ -440,12 +440,12 @@ class GW2RPC:
             # Query again after this time interval, else keep the previously known guild
             if (not self.prev_char) or ((self.prev_char and data["name"] != self.prev_char.name)) or (self.timeticks == 0):
                 # Query GW2API on character swap or every 20 minutes for guild info
-                character = Character(data)
+                character = Character(data, self.registry)
                 # Keep the guild tag from the old character
                 tag = character.guild_tag
             else:
                 # Else just create a char object without API calls, keep guild tag
-                character = Character(data, query_guild=False)
+                character = Character(data, self.registry, query_guild=False)
                 character.guild_tag = self.prev_char.guild_tag
                 tag = self.prev_char.guild_tag if self.prev_char else character.guild_tag
             self.prev_char = character
