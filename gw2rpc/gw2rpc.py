@@ -237,6 +237,15 @@ class GW2RPC:
 
     def shutdown(self, _=None):
         log.info("Shutdown!")
+        # Força limpeza do status no Discord antes de fechar
+        try:
+            if hasattr(self, 'sdk') and self.sdk and self.sdk.app:
+                self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                self.sdk.app.run_callbacks()
+                self.sdk.close()
+        except Exception as e:
+            log.debug(f"Erro ao limpar Discord SDK: {e}")
+
         if platform.system() != "Windows":
             try:
                 current_pid = os.getpid()
@@ -709,8 +718,8 @@ class GW2RPC:
                 if self.process.is_running():
                     return
                 else:
-                    if config.close_with_gw2:
-                        shutdown = True
+                    # FORÇA SHUTDOWN ASSIM QUE O JOGO FECHAR
+                    shutdown = True
             try:
                 names = []
                 for process in psutil.process_iter(attrs=['name', 'cmdline']):
