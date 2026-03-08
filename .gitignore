@@ -106,3 +106,8 @@ ENV/
 
 # VSC
 .vscode/
+venv/
+gw2rpc.log
+__pycache__/
+*.pyc
+config.ini

@@ -1,3 +1,4 @@
-requests
-infi.systray
 psutil
+requests
+pystray
+Pillow

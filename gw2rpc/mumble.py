@@ -4,51 +4,52 @@ from json.decoder import JSONDecodeError
 import mmap
 import time
 import socket
+import logging
+
+log = logging.getLogger()
 
 class MumbleLinkException(Exception):
     pass
 
 class Context(ctypes.Structure):
     _fields_ = [
-        ("serverAddress", ctypes.c_ubyte * 28),   # 28 bytes
-        ("mapId", ctypes.c_uint32),               # 4 bytes
-        ("mapType", ctypes.c_uint32),             # 4 bytes
-        ("shardId", ctypes.c_uint32),             # 4 bytes
-        ("instance", ctypes.c_uint32),            # 4 bytes
-        ("buildId", ctypes.c_uint32),             # 4 bytes
-        ("uiState", ctypes.c_uint32),             # 4 bytes
-        ("compassWidth", ctypes.c_uint16),        # 2 bytes
-        ("compassHeight", ctypes.c_uint16),       # 2 bytes
-        ("compassRotation", ctypes.c_float),      # 4 bytes
-        ("playerX", ctypes.c_float),              # 4 bytes
-        ("playerY", ctypes.c_float),              # 4 bytes
-        ("mapCenterX", ctypes.c_float),           # 4 bytes
-        ("mapCenterY", ctypes.c_float),           # 4 bytes
-        ("mapScale", ctypes.c_float),             # 4 bytes
-        ("processId", ctypes.c_uint32),           # 4 bytes
-        ("mountIndex", ctypes.c_uint8),           # 1 byte
+        ("serverAddress", ctypes.c_ubyte * 28),
+        ("mapId", ctypes.c_uint32),
+        ("mapType", ctypes.c_uint32),
+        ("shardId", ctypes.c_uint32),
+        ("instance", ctypes.c_uint32),
+        ("buildId", ctypes.c_uint32),
+        ("uiState", ctypes.c_uint32),
+        ("compassWidth", ctypes.c_uint16),
+        ("compassHeight", ctypes.c_uint16),
+        ("compassRotation", ctypes.c_float),
+        ("playerX", ctypes.c_float),
+        ("playerY", ctypes.c_float),
+        ("mapCenterX", ctypes.c_float),
+        ("mapCenterY", ctypes.c_float),
+        ("mapScale", ctypes.c_float),
+        ("processId", ctypes.c_uint32),
+        ("mountIndex", ctypes.c_uint8),
     ]
-
 
 # yapf:disable QA OFF
 class Link(ctypes.Structure):
     _fields_ = [
-        ("uiVersion", ctypes.c_uint32),           # 4 bytes
-        ("uiTick", ctypes.c_ulong),               # 4 bytes
-        ("fAvatarPosition", ctypes.c_float * 3),  # 3*4 bytes
-        ("fAvatarFront", ctypes.c_float * 3),     # 3*4 bytes
-        ("fAvatarTop", ctypes.c_float * 3),       # 3*4 bytes
-        ("name", ctypes.c_wchar * 256),           # 512 bytes
-        ("fCameraPosition", ctypes.c_float * 3),  # 3*4 bytes
-        ("fCameraFront", ctypes.c_float * 3),     # 3*4 bytes
-        ("fCameraTop", ctypes.c_float * 3),       # 3*4 bytes
-        ("identity", ctypes.c_wchar * 256),       # 512 bytes
-        ("context_len", ctypes.c_uint32),         # 4 bytes
-        # ("context", ctypes.c_ubyte * 256),      # 256 bytes, see below
-        # ("description", ctypes.c_wchar * 2048), # 4096 bytes, always empty
+        ("uiVersion", ctypes.c_uint32),
+        ("uiTick", ctypes.c_uint32),
+        ("fAvatarPosition", ctypes.c_float * 3),
+        ("fAvatarFront", ctypes.c_float * 3),
+        ("fAvatarTop", ctypes.c_float * 3),
+        ("name", ctypes.c_wchar * 256),
+        ("fCameraPosition", ctypes.c_float * 3),
+        ("fCameraFront", ctypes.c_float * 3),
+        ("fCameraTop", ctypes.c_float * 3),
+        ("identity", ctypes.c_wchar * 256),
+        ("context_len", ctypes.c_uint32),
+        ("context", ctypes.c_ubyte * 256),
+        ("description", ctypes.c_wchar * 2048),
     ]
 # yapf:enable QA ON
-
 
 class MumbleData:
     def __init__(self, mumble_link="MumbleLink"):
@@ -57,21 +58,78 @@ class MumbleData:
         self.last_map_id = None
         self.last_timestamp = None
         self.last_character_name = None
-        self.size_link = ctypes.sizeof(Link)
+        self.size_link = 8192  
         self.size_context = ctypes.sizeof(Context)
+        self.context = Context() 
         self.in_focus = False
         self.in_combat = False
         self.last_server_ip = None
 
     def create_map(self):
-        size_discarded = 256 - self.size_context + 4096 # empty areas of context and description
-        memfile_length = self.size_link + self.size_context + size_discarded
-        self.memfile = mmap.mmap(-1, memfile_length, self.mumble_link)
+        import platform
+        import os
+        import psutil
+        memfile_length = 8192
+        
+        if platform.system() == "Linux":
+            log.debug("DEBUG: Scanning Gw2-64.exe FDs for active MumbleLink...")
+            shm_path = "/dev/shm/MumbleLink" 
+            
+            import subprocess
+            found_fd = False
+            for p in psutil.process_iter(['name', 'cmdline']):
+                name = str(p.info.get('name', '')).lower()
+                cmdline = p.info.get('cmdline') or []
+                cmd_str = " ".join(cmdline).lower()
+                
+                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
+                    try:
+                        cmd = ["lsof", "-p", str(p.pid), "-n", "-w"]
+                        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+                        for line in output.splitlines():
+                            if "tmpmap" in line and ("REG" in line or "DEL" in line):
+                                 parts = line.split()
+                                 fd_str = "".join(filter(str.isdigit, parts[3])) 
+                                 if fd_str:
+                                     test_path = f"/proc/{p.pid}/fd/{fd_str}"
+                                     try:
+                                         with open(test_path, "rb") as test_f:
+                                             head = test_f.read(8)
+                                             if len(head) >= 8 and int.from_bytes(head[:4], "little") in (1, 2):
+                                                 shm_path = test_path
+                                                 log.info(f"SURGICAL FD DETECTED: {shm_path}")
+                                                 found_fd = True
+                                                 break
+                                     except:
+                                         pass
+                    except Exception as e:
+                        log.debug(f"Surgical scan failed for PID {p.pid}: {e}")
+                    
+                    if found_fd:
+                        break
+
+            try:
+                if found_fd or os.path.exists(shm_path):
+                    log.info(f"OPENING MUMBLELINK: {shm_path}")
+                    self._fd = os.open(shm_path, os.O_RDONLY)
+                    self.memfile = mmap.mmap(self._fd, memfile_length, access=mmap.ACCESS_READ)
+                else:
+                    self.memfile = None
+                    log.error("MumbleLink memory not found. Game might be loading or lsof failed.")
+            except Exception as e:
+                self.memfile = None
+                log.error(f"Failed to open MumbleLink at {shm_path}: {e}")
+        else:
+            self.memfile = mmap.mmap(-1, memfile_length, self.mumble_link)
 
     def close_map(self):
         if self.memfile:
             self.memfile.close()
             self.memfile = None
+        if hasattr(self, '_fd') and self._fd is not None:
+            import os
+            os.close(self._fd)
+            self._fd = None
             self.last_map_id = None
             self.last_timestamp = None
             self.last_character_name = None
@@ -87,53 +145,53 @@ class MumbleData:
         return ctype_instance
 
     def get_mumble_data(self, process=None):
-        self.memfile.seek(0)
-        data = self.memfile.read(self.size_link)
-        context = self.memfile.read(self.size_context)
-        result = self.Unpack(Link, data)
-        result_context = self.Unpack(Context, context)
-        if not result.identity:
+        if not self.memfile:
             return None
+        self.memfile.seek(0)
+        data = self.memfile.read(8192)
+        
         try:
-            data = json.loads(result.identity)
-        except JSONDecodeError:
+            identity_raw = data[592:592+512]
+            identity_str = identity_raw.decode('utf-16le', errors='ignore').split('\x00')[0]
+            
+            if identity_str.startswith('{'):
+                data_json = json.loads(identity_str)
+            else:
+                return None
+        except Exception as e:
             return None
 
+        context_data = data[1108:1108+self.size_context]
+        result_context = self.Unpack(Context, context_data)
+        self.context = result_context
+        
         uiState = result_context.uiState
         self.in_focus = bool(uiState & 0b1000)
         self.in_combat = bool(uiState & 0b1000000)
         
-        # Check if in character selection or ingame
         address_family = result_context.serverAddress[0]
         if address_family == socket.AF_INET:
             self.last_server_ip = socket.inet_ntop(socket.AF_INET, bytearray(result_context.serverAddress[4:8]))
         elif address_family == socket.AF_INET6:
-            # NOT implemented, because format of IPv6 Server address in Context struct is not documented!
             self.last_server_ip = None
         else:
             self.last_server_ip = None
-
-        if process and self.last_server_ip:
-            try:
-                for conn in process.connections():
-                    if conn.status == 'ESTABLISHED' and conn.raddr.ip == self.last_server_ip:
-                        break
-                else:
-                    return None
-            except:
-                pass
-
-        data["mount_index"] = result_context.mountIndex
-        data["in_combat"] = self.in_combat
-        character = data["name"]
-        map_id = data["map_id"]
-        if self.last_character_name != character or self.last_map_id != map_id:
-            self.last_timestamp = int(time.time())
-        self.last_map_id = map_id
-        self.last_character_name = character
-        return data
+        
+        data_json["mount_index"] = result_context.mountIndex
+        data_json["in_combat"] = self.in_combat
+        character = data_json.get("name")
+        map_id = data_json.get("map_id")
+        if character and map_id:
+            if self.last_character_name != character or self.last_map_id != map_id:
+                self.last_timestamp = int(time.time())
+            self.last_map_id = map_id
+            self.last_character_name = character
+        
+        return data_json
 
     def get_position(self):
+        if not self.memfile:
+            return Position([0,0,0])
         self.memfile.seek(0)
         data = self.memfile.read(self.size_link)
         result = self.Unpack(Link, data)

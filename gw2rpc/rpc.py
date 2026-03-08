@@ -35,10 +35,29 @@ import logging
 log = logging.getLogger(__name__)
 
 
+import platform
+import os
+
 class DiscordRPC:
     def __init__(self, client_id):
-        self.ipc_path = r'\\?\pipe\discord-ipc-0'
-        self.loop = asyncio.ProactorEventLoop()
+        if platform.system() == "Linux":
+            uid = os.getuid()
+            # Locais comuns do socket do Discord no Linux
+            paths = [
+                f'/run/user/{uid}/discord-ipc-0',
+                f'/run/user/{uid}/app/com.discordapp.Discord/discord-ipc-0',
+                '/tmp/discord-ipc-0'
+            ]
+            self.ipc_path = next((p for p in paths if os.path.exists(p)), paths[0])
+            try:
+                self.loop = asyncio.get_event_loop()
+            except RuntimeError:
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+        else:
+            self.ipc_path = r'\\?\pipe\discord-ipc-0'
+            self.loop = asyncio.ProactorEventLoop()
+        
         self.sock_reader: asyncio.StreamReader = None
         self.sock_writer: asyncio.StreamWriter = None
         self.client_id = client_id
@@ -60,7 +79,12 @@ class DiscordRPC:
     async def handshake(self):
         self.sock_reader = asyncio.StreamReader(loop=self.loop)
         reader_protocol = asyncio.StreamReaderProtocol(self.sock_reader, loop=self.loop)
-        self.sock_writer, _ = await self.loop.create_pipe_connection(lambda: reader_protocol, self.ipc_path)
+        
+        if platform.system() == "Linux":
+            self.sock_writer, _ = await self.loop.create_unix_connection(lambda: reader_protocol, self.ipc_path)
+        else:
+            self.sock_writer, _ = await self.loop.create_pipe_connection(lambda: reader_protocol, self.ipc_path)
+            
         self.send_data(0, {'v': 1, 'client_id': self.client_id})
         data = await self.sock_reader.read(1024)
         code, length = struct.unpack('<ii', data[:8])
@@ -89,6 +113,9 @@ class DiscordRPC:
         self.loop.close()
 
     def start(self):
-        self.loop = asyncio.ProactorEventLoop()
+        if platform.system() != "Linux":
+            self.loop = asyncio.ProactorEventLoop()
+        
+        # self.loop já deve estar definido no __init__ para Linux
         self.running = True
         self.loop.run_until_complete(self.handshake())

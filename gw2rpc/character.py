@@ -58,15 +58,16 @@ ELITESPECS = {
 class Character:
     def __init__(self, mumble_data, registry, query_guild=True):
         self.__mumble_data = mumble_data
-        self.name = mumble_data["name"]
+        self.name = mumble_data.get("name", "Unknown")
         # races may be missing from registry; fall back to local mapping (string keys)
         self.races = registry.get("races") or RACES
         self.professions = registry.get("professions") or PROFESSIONS
         self.elite_specs = registry.get("elitespecs") or ELITESPECS
 
         try:
-            self.race = self.races[str(mumble_data["race"])]
-        except KeyError:
+            race_id = str(mumble_data.get("race", "0"))
+            self.race = self.races.get(race_id, "")
+        except Exception:
             self.race = ""
         self.__api_info = None
 
@@ -83,14 +84,17 @@ class Character:
         self.guild_tag = self._get_guild_tag()
 
     def get_elite_spec(self):
-        if str(self.__mumble_data["spec"]) not in self.elite_specs.keys():
+        spec_id = str(self.__mumble_data.get("spec", ""))
+        profession_id = str(self.__mumble_data.get("profession", ""))
+        
+        if spec_id not in self.elite_specs.keys():
             # Meaning that its a core class, fall back
             try:
-                return self.professions[str(self.__mumble_data["profession"])]
-            except KeyError:
+                return self.professions.get(profession_id)
+            except Exception:
                 return None
         else:
-            return self.elite_specs[str(self.__mumble_data["spec"])]
+            return self.elite_specs.get(spec_id)
 
     def _get_guild_tag(self):
         tag = ""

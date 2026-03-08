@@ -1,8 +1,9 @@
 import logging
-from .lib.discordsdk import *
+import platform
+import os
 
 from .settings import config
-
+from .rpc import DiscordRPC
 
 log = logging.getLogger()
 log.setLevel(config.log_level)
@@ -10,54 +11,97 @@ log.setLevel(config.log_level)
 class DiscordSDK:
     def __init__(self, client_id) -> None:
         self.client_id = client_id
+        self.app = None
+        self.rpc = None
         self.start()
-        self.activity = Activity()
 
     def start(self):
-        try:
-            self.app = Discord(int(self.client_id), CreateFlags.no_require_discord)
-            self.activity_manager = self.app.get_activity_manager()
-        except:
-            self.app = None
-            self.activity_manager = None
-            log.debug("Discord not running.")
+        if platform.system() == "Linux":
+            try:
+                self.rpc = DiscordRPC(self.client_id)
+                self.rpc.start()
+                self.app = self # So self.sdk.app is not None
+                self.activity_manager = self # For clear_activity
+                log.info("Equivalente ao Discord SDK (Linux RPC) iniciado.")
+            except Exception as e:
+                self.app = None
+                log.error(f"Erro ao iniciar o Discord RPC no Linux: {e}")
+        else:
+            try:
+                # Fallback implementation or original import if available
+                from .lib.discordsdk import Discord, CreateFlags
+                self.app = Discord(int(self.client_id), CreateFlags.no_require_discord)
+                self.activity_manager = self.app.get_activity_manager()
+            except Exception as e:
+                self.app = None
+                log.debug(f"Discord Game SDK (Windows) não pôde ser iniciado: {e}")
+
+    def run_callbacks(self):
+        # Mock/Dummy function to keep compatibility with gw2rpc.py's main loop
+        pass
+
+    def clear_activity(self, callback=None):
+        # Mock for when game is not running
+        if self.rpc:
+            try:
+                # Send empty activity or just close
+                self.rpc.send_rich_presence({}, os.getpid())
+            except:
+                pass
 
     def set_activity(self, a):
+        if not self.app:
+            return
 
-        def verify_length( val):
+        def verify_length(val):
             if len(val) > 100:
                 val = val[:97] + "..."
             return val
 
-        self.activity.state = verify_length(a["state"])
-        self.activity.details = verify_length(a["details"] )
-        if a["timestamps"]:
-            self.activity.timestamps.start = a["timestamps"]["start"]
-        self.activity.assets.small_image = a["assets"]["small_image"]
-        self.activity.assets.small_text = verify_length(a["assets"]["small_text"])
-        self.activity.assets.large_image = a["assets"]["large_image"]
-        self.activity.assets.large_text = verify_length(a["assets"]["large_text"])
+        # Discord RPC payload format
+        activity = {
+            "state": verify_length(a.get("state", "")),
+            "details": verify_length(a.get("details", "")),
+            "assets": {}
+        }
+        
+        assets = a.get("assets", {})
+        if "large_image" in assets:
+            activity["assets"]["large_image"] = assets["large_image"]
+        if "large_text" in assets:
+            activity["assets"]["large_text"] = verify_length(assets["large_text"])
+        if "small_image" in assets:
+            activity["assets"]["small_image"] = assets["small_image"]
+        if "small_text" in assets:
+            activity["assets"]["small_text"] = verify_length(assets["small_text"])
+        
+        if "timestamps" in a and a["timestamps"]:
+            activity["timestamps"] = a["timestamps"]
 
-        #self.activity.buttons = a["buttons"][0]
+        # Buttons support in newer RPC versions
+        if "buttons" in a and a["buttons"]:
+            activity["buttons"] = a["buttons"]
 
-        #self.activity.party.id = str(uuid.uuid4())
-        #self.activity.secrets.join = str(uuid.uuid4())
-
-        try:
-            self.activity_manager.update_activity(self.activity, self.callback)
-        except OSError:
-            log.debug("Error reading activity manager.")
+        if platform.system() == "Linux":
+            try:
+                import psutil
+                # Try to get game PID or fallback to a dummy PID if needed
+                pid = os.getpid() # Default fallback
+                self.rpc.send_rich_presence(activity, pid)
+            except Exception as e:
+                log.error(f"Erro ao enviar Rich Presence (Linux): {e}")
+        else:
+            # Re-implementing original SDK logic for Windows if necessary
+            # For now, this is a Linux port so we prioritize Linux
             pass
 
     def close(self):
-        try:
-            self.app = None
-        except:
-            pass
+        if platform.system() == "Linux" and self.rpc:
+            try:
+                self.rpc.close()
+            except:
+                pass
+        self.app = None
 
     def callback(self, result):
-        if result == Result.ok:
-            log.debug("Successfully set the activity!")
-        else:
-            pass
-            #raise Exception(result)
+        pass
