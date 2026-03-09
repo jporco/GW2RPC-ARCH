@@ -186,6 +186,7 @@ class GW2RPC:
         self.prev_char = None
         self.interval = 1 / 2
         self.session_start_time = int(time.time())
+        self.running = True
 
     def get_systray_menu(self):
         menu_options = ((_("About"), None, self.about), )
@@ -292,13 +293,15 @@ class GW2RPC:
         return mumble_objects
 
     def shutdown(self, _=None):
+        if not self.running: return
+        self.running = False # Stop the main loop from sending updates
+        
         log.info("Shutdown!")
         # Força limpeza do status no Discord antes de fechar
         try:
             if hasattr(self, 'sdk') and self.sdk and self.sdk.app:
                 # Send empty activity first
-                self.sdk.set_activity({})
-                self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                self.sdk.set_activity(None) # Properly clears via null
                 if hasattr(self.sdk.app, 'run_callbacks'):
                     self.sdk.app.run_callbacks()
                 # Give it a small time to flush the packet to the socket
@@ -307,19 +310,6 @@ class GW2RPC:
         except Exception as e:
             log.debug(f"Erro ao limpar Discord SDK: {e}")
 
-        if platform.system() != "Windows":
-            try:
-                current_pid = os.getpid()
-                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                    try:
-                        if proc.info['pid'] != current_pid:
-                            cmdline = str(proc.info['cmdline'])
-                            if "run.py" in cmdline or "gw2rpc" in proc.info['name'].lower():
-                                proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except Exception as e:
-                log.debug(f"Erro ao limpar instâncias: {e}")
         os._exit(0)
 
     def about(self, _):
@@ -806,7 +796,7 @@ class GW2RPC:
             check_for_running_rpc()
             self.create_systray()
             
-            while True:
+            while self.running:
                 try:
                     # Comprehensive process and link update
                     self.update_mumble_links()

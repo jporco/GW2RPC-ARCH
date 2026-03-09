@@ -67,9 +67,16 @@ class DiscordRPC:
         self.last_pid = None
 
     async def read_output(self):
-        data = await self.sock_reader.read(1024)
-        code, length = struct.unpack('<ii', data[:8])
-        log.debug(f'OP Code: {code}; Length: {length}\nResponse:\n{json.loads(data[8:].decode("utf-8"))}\n')
+        try:
+            # Add a small timeout so we don't hang during shutdown
+            data = await asyncio.wait_for(self.sock_reader.read(1024), timeout=1.0)
+            if data:
+                code, length = struct.unpack('<ii', data[:8])
+                log.debug(f'OP Code: {code}; Length: {length}\nResponse:\n{json.loads(data[8:].decode("utf-8"))}\n')
+        except asyncio.TimeoutError:
+            log.debug("Discord didn't respond to RPC command (timeout)")
+        except Exception as e:
+            log.debug(f"Error reading Discord output: {e}")
 
     def send_data(self, op: int, payload: dict):
         payload = json.dumps(payload)
