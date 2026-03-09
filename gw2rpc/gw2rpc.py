@@ -162,23 +162,30 @@ class GW2RPC:
         self.sdk = DiscordSDK(GW2RPC_APP_ID)
         self.registry = fetch_registry()
         self.support_invite = fetch_support_invite()
+        self.commander_webhook_sent = False
+        self.no_pois = set()
+        self.check_for_updates()
+        
+        # Initialize monitoring variables
         self.process = None
+        self.mumble_links = set()
+        self.mumble_objects = []
+        
+        # Initial scan to populate links and process
+        self.update_mumble_links()
+        
+        self.game = None
+        if len(self.mumble_objects) > 0:
+            self.game = self.mumble_objects[0][0]
+            
         self.last_map_info = None
         self.last_continent_info = None
         self.last_boss = None
         self.boss_timestamp = None
-        self.commander_webhook_sent = False
-        self.no_pois = set()
-        self.check_for_updates()
-        self.game = None
-        self.mumble_links = self.get_mumble_links()
-        self.mumble_objects = self.create_mumble_objects()
         self.timeticks = 0
         self.prev_char = None
         self.interval = 1 / 2
         self.session_start_time = int(time.time())
-        if len(self.mumble_objects) > 0:
-            self.game = self.mumble_objects[0][0]
 
     def get_systray_menu(self):
         menu_options = ((_("About"), None, self.about), )
@@ -204,26 +211,75 @@ class GW2RPC:
         self.systray.start()
 
     def get_mumble_links(self):
-        mumble_links = set()
-        try:
-            for process in psutil.process_iter():
-                pinfo = process.as_dict(attrs=['pid', 'name', 'cmdline'])
-                name = str(pinfo.get('name', '')).lower()
-                cmdline = pinfo.get('cmdline') or []
-                cmd_str = " ".join(cmdline).lower()
+        """ This is now a lightweight wrapper as scanning is handled in update_mumble_links """
+        return self.mumble_links
 
-                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str or "simulate_mumble.py" in cmd_str:
-                    try:
-                        mumble_links.add((cmdline[cmdline.index('-mumble') + 1], process))
-                    except ValueError:
-                        mumble_links.add(("MumbleLink", process))
-                    except AttributeError:
-                        log.error("GW2 process crashed!")
-                        continue
-        except psutil.NoSuchProcess:
-            pass
-        log.debug(f"Mumble Links found: {mumble_links}")
-        return mumble_links
+    def update_mumble_links(self):
+        """ 
+        Consolidated scanner: 
+        1. Finds the GW2 process for shutdown monitoring.
+        2. Detects MumbleLink instances.
+        3. Only uses one psutil.process_iter() pass.
+        """
+        all_found_links = set()
+        gw2_proc = None
+        
+        try:
+            for process in psutil.process_iter(attrs=['pid', 'name', 'cmdline']):
+                try:
+                    pinfo = process.info
+                    name = str(pinfo.get('name', '')).lower()
+                    cmdline = pinfo.get('cmdline') or []
+                    cmd_str = " ".join(cmdline).lower()
+
+                    if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
+                        if not gw2_proc:
+                            gw2_proc = process
+                        
+                        try:
+                            # Try to find -mumble argument
+                            mumble_name = "MumbleLink"
+                            if '-mumble' in cmdline:
+                                mumble_name = cmdline[cmdline.index('-mumble') + 1]
+                            all_found_links.add((mumble_name, process))
+                        except (ValueError, IndexError):
+                            all_found_links.add(("MumbleLink", process))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            log.error(f"Error scanning processes: {e}")
+
+        # Update self.process for main_loop monitoring
+        if gw2_proc:
+            self.process = gw2_proc
+        elif self.process and not self.process.is_running():
+            self.process = None
+
+        # Compare using PIDs for stability
+        all_pids = set((m, p.pid) for m, p in all_found_links)
+        current_pids = set((m, p.pid) for m, p in self.mumble_links)
+        
+        new_pids = all_pids.difference(current_pids)
+        dead_pids = current_pids.difference(all_pids)
+
+        # Remove dead links
+        for m, pid1 in dead_pids:
+            for o, p2 in self.mumble_objects[:]:
+                if o.mumble_link == m and p2.pid == pid1:
+                    o.close_map()
+                    self.mumble_objects.remove((o, p2))
+            self.mumble_links = set((m_l, p_l) for m_l, p_l in self.mumble_links if not (m_l == m and p_l.pid == pid1))
+
+        # Add new links
+        for m, pid in new_pids:
+            try:
+                p = next(p_obj for m_l, p_obj in all_found_links if m_l == m and p_obj.pid == pid)
+                o = MumbleData(m)
+                o.create_map()
+                self.mumble_objects.append((o, p))
+                self.mumble_links.add((m, p))
+            except StopIteration:
+                continue
 
     def create_mumble_objects(self):
         mumble_objects = []
@@ -420,16 +476,18 @@ class GW2RPC:
         }
 
     def get_activity(self, mumble_targets=None):
-        if mumble_targets:
-            self.mumble_objects = mumble_targets
-            active, active_p = self.get_active_instance()
-            self.game = active if active else self.game
-            self.process = active_p if active_p else self.process
-        else:
-            self.create_mumble_objects()
-            active, active_p = self.get_active_instance()
-            self.game = active if active else self.game
-            self.process = active_p if active_p else self.process
+        if not mumble_targets:
+            return None
+        
+        # In a multi-account scenario, pick the active one if possible
+        active, active_p = self.get_active_instance()
+        self.game = active if active else self.game
+        self.process = active_p if active_p else self.process
+        
+        if not self.game:
+            return None
+
+        # Helper functions
         def get_region():
             world = api.world
             if world:
@@ -445,31 +503,6 @@ class GW2RPC:
             if config.disable_pois_in_wvw and region == 7:
                 return None
             return self.find_closest_point(map_info, continent_info)
-
-        def update_mumble_links():
-            all_links = self.get_mumble_links()
-            new_links = all_links.difference(self.mumble_links)
-            dead_links = self.mumble_links.difference(all_links)
-
-            for m, p1 in dead_links:
-                for o, p2 in self.mumble_objects:
-                    if o.mumble_link == m:
-                        o.close_map()
-                        self.mumble_objects.remove((o, p2))
-                        del o
-                self.mumble_links.remove((m, p1))
-
-            for m, p in new_links:
-                o = MumbleData(m)
-                if not o.memfile:
-                    o.create_map()
-                self.mumble_objects.append((o, p))
-                self.mumble_links.add((m, p))
-
-            if all_links and all_links == new_links:
-                self.game = self.mumble_objects[0][0]
-
-        update_mumble_links()
         active, active_p = self.get_active_instance()
         self.game = active if active else self.game
         self.process = active_p if active_p else self.process
@@ -767,45 +800,43 @@ class GW2RPC:
         try:
             check_for_running_rpc()
             self.create_systray()
-            mumble_targets = []
+            
             while True:
                 try:
-                    if not mumble_targets:
-                        update_gw2_process()
-                        mumble_targets = self.create_mumble_objects()
-                     
-                    if not mumble_targets:
-                        time.sleep(2)
-                        continue
+                    # Comprehensive process and link update
+                    self.update_mumble_links()
+                    
+                    if not self.process:
+                        raise GameNotRunningError
 
                     self.interval = 1 / 2
-                    try:
-                        data = self.get_activity(mumble_targets)
-                    except requests.exceptions.ConnectionError:
-                        mumble_targets = []
-                        raise GameNotRunningError
-                    except Exception as e:
-                        log.error(f"Error in get_activity: {e}")
-                        time.sleep(2)
-                        continue
-                    if not self.sdk.app:
-                        self.sdk.start()
-                        log.debug("starting self.sdk")
+                    data = None
+                    
+                    if self.mumble_objects:
+                        try:
+                            data = self.get_activity(self.mumble_objects)
+                        except requests.exceptions.ConnectionError:
+                            raise GameNotRunningError
+                        except Exception as e:
+                            log.error(f"Error in get_activity: {e}")
+                    
                     if not data:
                         data = self.in_character_selection()
-                    log.debug(data)
-                    try:
-                        if self.sdk.app:
+                    
+                    if not self.sdk.app:
+                        self.sdk.start()
+                    
+                    if self.sdk.app:
+                        try:
                             self.sdk.set_activity(data)
-                            try:
-                                self.sdk.app.run_callbacks()
-                            except Exception as e:
-                                log.debug(f"Erro no SDK: {e}")
-                                self.sdk.close()
-                                continue
-                    except BrokenPipeError:
-                        raise GameNotRunningError
+                            self.sdk.app.run_callbacks()
+                        except Exception as e:
+                            log.debug(f"Erro no SDK: {e}")
+                            self.sdk.close()
+                    
                     self.timeticks = (self.timeticks + 1) % 1000
+                    time.sleep(2) # Normal loop interval
+                    
                 except GameNotRunningError:
                     self.interval = 5
                     if self.game:

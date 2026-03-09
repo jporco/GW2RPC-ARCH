@@ -12,12 +12,13 @@ echo "Instalando dependencias do Python..."
 
 echo "Criando atalho no menu..."
 mkdir -p ~/.local/share/applications
+CURRENT_DIR=$(pwd)
 cat <<APP > ~/.local/share/applications/gw2rpc.desktop
 [Desktop Entry]
 Name=GW2 RPC
 Comment=Discord Rich Presence for Guild Wars 2
-Exec=/home/porco/GW2RPC_fork/venv/bin/python /home/porco/GW2RPC_fork/run.py
-Icon=/home/porco/GW2RPC_fork/icon.png
+Exec=$CURRENT_DIR/venv/bin/python $CURRENT_DIR/run.py
+Icon=$CURRENT_DIR/icon.png
 Terminal=false
 Type=Application
 Categories=Game;Utility;

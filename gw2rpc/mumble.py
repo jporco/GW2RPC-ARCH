@@ -64,6 +64,8 @@ class MumbleData:
         self.in_focus = False
         self.in_combat = False
         self.last_server_ip = None
+        self.last_valid_data = time.time()
+        self.last_rescan = 0
 
     def create_map(self):
         import platform
@@ -94,12 +96,17 @@ class MumbleData:
                                      test_path = f"/proc/{p.pid}/fd/{fd_str}"
                                      try:
                                          with open(test_path, "rb") as test_f:
-                                             head = test_f.read(8)
-                                             if len(head) >= 8 and int.from_bytes(head[:4], "little") in (1, 2):
-                                                 shm_path = test_path
-                                                 log.info(f"SURGICAL FD DETECTED: {shm_path}")
-                                                 found_fd = True
-                                                 break
+                                             # MumbleLink offset for identity is 592
+                                             # UTF-16LE for '{' is 0x7b 0x00
+                                             data = test_f.read(594)
+                                             if len(data) >= 594:
+                                                 ui_version = int.from_bytes(data[:4], "little")
+                                                 # ui_version in [1, 2] AND identity starts with '{'
+                                                 if ui_version in (1, 2) and data[592] == 0x7b and data[593] == 0x00:
+                                                     shm_path = test_path
+                                                     log.info(f"SURGICAL FD DETECTED (VALID): {shm_path}")
+                                                     found_fd = True
+                                                     break
                                      except:
                                          pass
                     except Exception as e:
@@ -157,9 +164,21 @@ class MumbleData:
             if identity_str.startswith('{'):
                 data_json = json.loads(identity_str)
             else:
+                now = time.time()
+                if now - self.last_valid_data > 5 and now - self.last_rescan > 2:
+                    log.info("MumbleLink data invalid for 5s, attempting re-scan...")
+                    self.last_rescan = now
+                    self.create_map()
                 return None
         except Exception as e:
+            now = time.time()
+            if now - self.last_valid_data > 5 and now - self.last_rescan > 2:
+                log.info(f"MumbleLink error ({e}), attempting re-scan...")
+                self.last_rescan = now
+                self.create_map()
             return None
+
+        self.last_valid_data = time.time()
 
         context_data = data[1108:1108+self.size_context]
         result_context = self.Unpack(Context, context_data)
