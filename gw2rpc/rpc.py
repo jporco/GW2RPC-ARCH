@@ -102,15 +102,36 @@ class DiscordRPC:
         }
         self.send_data(1, payload)
         self.last_pid = pid
-        self.loop.run_until_complete(self.read_output())
+        try:
+            # Garante que os dados foram enviados (flush/drain)
+            async def drain():
+                await self.sock_writer.drain()
+            self.loop.run_until_complete(drain())
+            # Lê a resposta para confirmar
+            self.loop.run_until_complete(self.read_output())
+        except:
+            pass
 
     def close(self):
-        self.send_data(2, {'v': 1, 'client_id': self.client_id})
+        try:
+            self.send_data(2, {'v': 1, 'client_id': self.client_id})
+            async def finish():
+                await self.sock_writer.drain()
+            self.loop.run_until_complete(finish())
+        except:
+            pass
         self.last_pid = None
         self.running = False
-        self.sock_writer.close()
+        if self.sock_writer:
+            self.sock_writer.close()
         self.sock_writer: asyncio.StreamWriter = None
-        self.loop.close()
+        if self.loop.is_running():
+            pass # Non-blocking loop
+        else:
+            try:
+                self.loop.close()
+            except:
+                pass
 
     def start(self):
         if platform.system() != "Linux":

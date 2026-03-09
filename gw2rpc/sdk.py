@@ -41,16 +41,20 @@ class DiscordSDK:
         pass
 
     def clear_activity(self, callback=None):
-        # Mock for when game is not running
+        # Envia None (null no JSON) para limpar o status no Discord
         if self.rpc:
             try:
-                # Send empty activity or just close
-                self.rpc.send_rich_presence({}, os.getpid())
+                self.rpc.send_rich_presence(None, os.getpid())
             except:
                 pass
 
     def set_activity(self, a):
         if not self.app:
+            return
+
+        if not a:
+            # Se 'a' for None ou {}, trata como limpeza
+            self.clear_activity()
             return
 
         def verify_length(val):
