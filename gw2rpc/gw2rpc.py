@@ -296,8 +296,13 @@ class GW2RPC:
         # Força limpeza do status no Discord antes de fechar
         try:
             if hasattr(self, 'sdk') and self.sdk and self.sdk.app:
+                # Send empty activity first
+                self.sdk.set_activity({})
                 self.sdk.activity_manager.clear_activity(self.sdk.callback)
-                self.sdk.app.run_callbacks()
+                if hasattr(self.sdk.app, 'run_callbacks'):
+                    self.sdk.app.run_callbacks()
+                # Give it a small time to flush the packet to the socket
+                time.sleep(1)
                 self.sdk.close()
         except Exception as e:
             log.debug(f"Erro ao limpar Discord SDK: {e}")
@@ -842,7 +847,14 @@ class GW2RPC:
                     if self.game:
                         self.game.close_map()
                     if self.sdk.app:
-                        self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                        try:
+                            self.sdk.set_activity({}) # Send empty to clear
+                            self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                            if hasattr(self.sdk.app, 'run_callbacks'):
+                                self.sdk.app.run_callbacks()
+                            time.sleep(0.5) # Small flush delay
+                        except:
+                            pass
                         self.sdk.close()
                     time.sleep(self.interval)
         except Exception as e:
