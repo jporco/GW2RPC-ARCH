@@ -45,7 +45,7 @@ You can launch the program manually from your application menu by clicking on **
 
 However, the best way to use it is to make it launch automatically whenever you hit "Play" on Steam.
 
-### ⚙️ Auto-Start with Steam
+### ⚙️ Auto-Start with Steam ( In some cases it does not work correctly, if this happens, close rpc in the tray and open it again using the shortcut, it should return to normal )
 Right-click Guild Wars 2 in your Steam Library -> **Properties** -> **General** -> **Launch Options**.
 
 Copy and paste the exact line below:
