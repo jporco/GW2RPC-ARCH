@@ -373,9 +373,6 @@ class GW2RPC:
             
         data = self.game.get_mumble_data(process=active_p)
         
-        # Se a memória estiver temporariamente vazia (ex: transição de mapa)
-        # Retorna a tela de loading sem destruir o cache da memória.
-        # Isso elimina os "piscões" na tela do Discord.
         if not data or not data.get("name") or data.get("map_id", 0) == 0:
             return self.in_character_selection()
         
@@ -402,9 +399,9 @@ class GW2RPC:
             self.prev_char = character
         except APIError:
             self.last_map_info = None
-            return self.in_character_selection()
+            return None # Ignora falhas da API do jogo em vez de piscar tela
         except Exception:
-            return self.in_character_selection()
+            return None # Ignora erros gerais de rede em vez de piscar tela
             
         state, map_asset = self.get_map_asset(map_info, mount_index=mount_index)
         tag = tag if config.display_tag else ""
@@ -533,8 +530,6 @@ class GW2RPC:
                     if not self.process:
                         proc = self.is_gw2_running()
                         if proc:
-                            # Força o Python a esperar o jogo/Proton ser o criador nativo do arquivo de memória.
-                            # Se o arquivo não existe ainda, gera erro para tentar novamente em 5s.
                             if not os.path.exists("/dev/shm/MumbleLink"):
                                 raise GameNotRunningError
                             self.process = proc
@@ -557,7 +552,7 @@ class GW2RPC:
                     if not self.sdk.app:
                         self.sdk.start()
 
-                    if data:
+                    if data is not None:
                         try:
                             if self.sdk.app:
                                 self.sdk.set_activity(data)
@@ -578,7 +573,6 @@ class GW2RPC:
                         except: pass
                         self.sdk.close()
                     
-                    # Limpa a memória apenas se o jogo realmente estiver fechado
                     if not self.is_gw2_running():
                         if os.path.exists("/dev/shm/MumbleLink"):
                             try: os.remove("/dev/shm/MumbleLink")
