@@ -14,7 +14,6 @@ import platform
 if platform.system() != "Windows":
     import pystray
     from PIL import Image
-    # Mock SysTrayIcon for compatibility with the rest of the code
     class SysTrayIcon:
         def __init__(self, icon_path, title, menu_options=None, on_quit=None):
             self.title = title
@@ -28,15 +27,13 @@ if platform.system() != "Windows":
                 image = Image.open(self.icon_path)
             except Exception as e:
                 log.error(f"Erro ao carregar icone: {e}")
-                image = Image.new('RGBA', (64, 64), (0, 0, 0, 0)) # Fallback transparente
+                image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
             
-            # Convert menu_options from (text, icon, callback) to pystray.MenuItem
             items = []
             if self.menu_options:
                 for text, _icon, callback in self.menu_options:
                     items.append(pystray.MenuItem(text, callback))
             
-            # Add final Quit option
             items.append(pystray.MenuItem(_("Quit"), self.on_quit_internal))
             
             self.icon = pystray.Icon("GW2RPC", image, self.title, pystray.Menu(*items))
@@ -52,23 +49,19 @@ if platform.system() != "Windows":
 else:
     from infi.systray import SysTrayIcon
 import socket
-import sys
 
-# Single Instance Lock for Linux
 def check_single_instance():
     if platform.system() != "Windows":
         try:
             lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             lock_socket.bind('\0gw2rpc_lock_socket')
-            return lock_socket # Keep reference to keep lock
+            return lock_socket 
         except socket.error:
-            print("GW2RPC já está em execução.")
             sys.exit(0)
     return None
 
 _lock = check_single_instance()
 import gettext
-import urllib.parse
 
 from .api import APIError, api   
 from .character import Character
@@ -76,18 +69,13 @@ from .mumble import MumbleData
 from .settings import config
 from .sdk import DiscordSDK
 
-import sys
-import os
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
     base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
 VERSION = 2.55
 HEADERS = {'User-Agent': 'GW2RPC v{}'.format(VERSION)}
-
 GW2RPC_BASE_URL = "https://gw2rpc.info/api/v2/"
-
 GW2RPC_APP_ID = "385475290614464513"
 
 log = logging.getLogger()
@@ -104,7 +92,6 @@ except:
 
 class GameNotRunningError(Exception):
     pass
-
 
 worlds = {
     'NA': [
@@ -128,28 +115,22 @@ worlds = {
     ]
 }
 
-
 def create_msgbox(description, *, title='GW2RPC', code=0):
     if platform.system() == "Windows":
         MessageBox = ctypes.windll.user32.MessageBoxW
         return MessageBox(None, description, title, code)
     else:
-        print(f"[{title}] {description}")
         return 0
-
 
 class GW2RPC:
     def __init__(self):
-
         def fetch_registry():
             url = GW2RPC_BASE_URL + "registry"
             try:
                 res = requests.get(url, headers=HEADERS)
             except:
-                log.error(f"Could not open connection to {url}. Web API will not be available!")
                 return None
             if res.status_code != 200:
-                log.error("Could not fetch the web registry")
                 return None
             return res.json()
 
@@ -162,31 +143,20 @@ class GW2RPC:
         self.sdk = DiscordSDK(GW2RPC_APP_ID)
         self.registry = fetch_registry()
         self.support_invite = fetch_support_invite()
-        self.commander_webhook_sent = False
-        self.no_pois = set()
-        self.check_for_updates()
-        
-        # Initialize monitoring variables
         self.process = None
-        self.mumble_links = set()
-        self.mumble_objects = []
-        
-        # Initial scan to populate links and process
-        self.update_mumble_links()
-        
-        self.game = None
-        if len(self.mumble_objects) > 0:
-            self.game = self.mumble_objects[0][0]
-            
         self.last_map_info = None
         self.last_continent_info = None
         self.last_boss = None
         self.boss_timestamp = None
+        self.commander_webhook_sent = False
+        self.no_pois = set()
+        self.game = None
+        self.mumble_links = set()
+        self.mumble_objects = []
         self.timeticks = 0
         self.prev_char = None
         self.interval = 1 / 2
         self.session_start_time = int(time.time())
-        self.running = True
 
     def get_systray_menu(self):
         menu_options = ((_("About"), None, self.about), )
@@ -212,75 +182,24 @@ class GW2RPC:
         self.systray.start()
 
     def get_mumble_links(self):
-        """ This is now a lightweight wrapper as scanning is handled in update_mumble_links """
-        return self.mumble_links
-
-    def update_mumble_links(self):
-        """ 
-        Consolidated scanner: 
-        1. Finds the GW2 process for shutdown monitoring.
-        2. Detects MumbleLink instances.
-        3. Only uses one psutil.process_iter() pass.
-        """
-        all_found_links = set()
-        gw2_proc = None
-        
+        mumble_links = set()
         try:
-            for process in psutil.process_iter(attrs=['pid', 'name', 'cmdline']):
-                try:
-                    pinfo = process.info
-                    name = str(pinfo.get('name', '')).lower()
-                    cmdline = pinfo.get('cmdline') or []
-                    cmd_str = " ".join(cmdline).lower()
+            for process in psutil.process_iter():
+                pinfo = process.as_dict(attrs=['pid', 'name', 'cmdline'])
+                name = str(pinfo.get('name', '')).lower()
+                cmdline = pinfo.get('cmdline') or []
+                cmd_str = " ".join(cmdline).lower()
 
-                    if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
-                        if not gw2_proc:
-                            gw2_proc = process
-                        
-                        try:
-                            # Try to find -mumble argument
-                            mumble_name = "MumbleLink"
-                            if '-mumble' in cmdline:
-                                mumble_name = cmdline[cmdline.index('-mumble') + 1]
-                            all_found_links.add((mumble_name, process))
-                        except (ValueError, IndexError):
-                            all_found_links.add(("MumbleLink", process))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-        except Exception as e:
-            log.error(f"Error scanning processes: {e}")
-
-        # Update self.process for main_loop monitoring
-        if gw2_proc:
-            self.process = gw2_proc
-        elif self.process and not self.process.is_running():
-            self.process = None
-
-        # Compare using PIDs for stability
-        all_pids = set((m, p.pid) for m, p in all_found_links)
-        current_pids = set((m, p.pid) for m, p in self.mumble_links)
-        
-        new_pids = all_pids.difference(current_pids)
-        dead_pids = current_pids.difference(all_pids)
-
-        # Remove dead links
-        for m, pid1 in dead_pids:
-            for o, p2 in self.mumble_objects[:]:
-                if o.mumble_link == m and p2.pid == pid1:
-                    o.close_map()
-                    self.mumble_objects.remove((o, p2))
-            self.mumble_links = set((m_l, p_l) for m_l, p_l in self.mumble_links if not (m_l == m and p_l.pid == pid1))
-
-        # Add new links
-        for m, pid in new_pids:
-            try:
-                p = next(p_obj for m_l, p_obj in all_found_links if m_l == m and p_obj.pid == pid)
-                o = MumbleData(m)
-                o.create_map()
-                self.mumble_objects.append((o, p))
-                self.mumble_links.add((m, p))
-            except StopIteration:
-                continue
+                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
+                    try:
+                        mumble_links.add((cmdline[cmdline.index('-mumble') + 1], process))
+                    except ValueError:
+                        mumble_links.add(("MumbleLink", process))
+                    except AttributeError:
+                        continue
+        except psutil.NoSuchProcess:
+            pass
+        return mumble_links
 
     def create_mumble_objects(self):
         mumble_objects = []
@@ -289,73 +208,34 @@ class GW2RPC:
             if not o.memfile:
                 o.create_map()
             mumble_objects.append((o, p))
-        log.debug(f"Mumble Link objects created: {mumble_objects}")
         return mumble_objects
 
     def shutdown(self, _=None):
-        if not self.running: return
-        self.running = False # Stop the main loop from sending updates
-        
-        log.info("Shutdown!")
-        # Força limpeza do status no Discord antes de fechar
         try:
             if hasattr(self, 'sdk') and self.sdk and self.sdk.app:
-                # Send empty activity first
-                self.sdk.set_activity(None) # Properly clears via null
-                if hasattr(self.sdk.app, 'run_callbacks'):
-                    self.sdk.app.run_callbacks()
-                # Give it a small time to flush the packet to the socket
-                time.sleep(1)
+                self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                self.sdk.app.run_callbacks()
                 self.sdk.close()
-        except Exception as e:
-            log.debug(f"Erro ao limpar Discord SDK: {e}")
-
+            if os.path.exists("/dev/shm/MumbleLink"):
+                os.remove("/dev/shm/MumbleLink")
+        except: pass
+        if platform.system() != "Windows":
+            try:
+                current_pid = os.getpid()
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        if proc.info['pid'] != current_pid:
+                            cmdline = str(proc.info['cmdline'])
+                            if "run.py" in cmdline or "gw2rpc" in proc.info['name'].lower():
+                                proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except: pass
         os._exit(0)
 
-    def about(self, _):
-        message = (
-            "Version: {}\n\nhttps://gw2rpc.info\n\nBy Maselkov & "
-            "N1tR0\nIcons by Zebban\nWebsite by Penemue\nTranslations by Seshu (de), TheRaytheone (es), z0n3g (fr)".format(VERSION))
-        threading.Thread(target=create_msgbox, args=[message]).start()
-
-    def join_guild(self, _):
-        try:
-            webbrowser.open(self.support_invite)
-        except webbrowser.Error:
-            pass
-
-    def toggle_announce_raid(self, _):
-        config.announce_raid = not config.announce_raid
-        config.change_boolean_item("Webhooks", "AnnounceRaid", config.announce_raid)
-        menu_options = self.get_systray_menu()
-        self.systray.update(menu_options=menu_options)
-
-    def check_for_updates(self):
-        def get_build():
-            url = GW2RPC_BASE_URL + "build"
-            try:
-                r = requests.get(url, headers=HEADERS)
-            except:
-                log.error(f"Could not open connection to {url}")
-                return None
-            try:
-                return r.json()["build"]
-            except:
-                return None
-
-        build = get_build()
-        if not build:
-            log.error("Could not retrieve build!")
-            create_msgbox(_("Could not check for updates - check your connection!"))
-            return
-        if build > VERSION:
-            log.info("New version found! Current: {} New: {}".format(VERSION, build))
-            res = create_msgbox(
-                _("There is a new update for GW2 Rich Presence available. "
-                "Would you like to be taken to the download page now?"),
-                code=68)
-            if res == 6:
-                webbrowser.open("https://gw2rpc.info/")
+    def about(self, _): pass
+    def join_guild(self, _): pass
+    def toggle_announce_raid(self, _): pass
 
     def get_active_instance(self):
         for o, p in self.mumble_objects:
@@ -364,11 +244,25 @@ class GW2RPC:
                 return (o, p)
         return None, None
 
+    def in_character_selection(self):
+        activity = {
+            "state": _("in character selection") + " / " + _("loading screen"),
+            "details": _("Character Selection"),
+            "timestamps": {
+                'start': self.session_start_time
+            },
+            "assets": {
+                "large_image": "default",
+                "large_text": _("Character Selection")
+            },
+            "buttons": []
+        }
+        return activity
+
     def get_map_asset(self, map_info, mount_index=None):
         map_id = map_info["id"]
         map_name = map_info["name"]
         region = str(map_info.get("region_id", "thanks_anet"))
-
         position = self.game.get_position()
         m_x, m_y = self.convert_mumble_coordinates(map_info, position)
         
@@ -382,7 +276,6 @@ class GW2RPC:
                         image = name.replace('.', "_").lower().replace(" ", "_")
                     if state:
                         break
-
                     if fractal["id"] == map_id:
                         state = _("in ") + _("fractal") + ": " + _(fractal["name"])  
                         break
@@ -409,37 +302,10 @@ class GW2RPC:
                 else:
                     state = _("in ") + name
         else:
-            special = {
-                "1068": "gh_hollow",  
-                "1101": "gh_hollow",  
-                "1107": "gh_hollow",  
-                "1108": "gh_hollow",  
-                "1121": "gh_hollow",  
-                "1069": "gh_precipice",  
-                "1076": "gh_precipice",  
-                "1071": "gh_precipice",  
-                "1104": "gh_precipice",  
-                "1124": "gh_precipice",  
-                "882": "wintersday_snowball",
-                "877": "wintersday_snowball",  
-                "1155": "1155",  
-                "1214": "gh_haven",  
-                "1215": "gh_haven",  
-                "1232": "gh_haven",  
-                "1224": "gh_haven",  
-                "1243": "gh_haven",  
-                "1250": "gh_haven"
-            }.get(map_info["id"])
-            if special:
-                return special
             if map_info["type"] == "Public":
                 image = map_id
             else:
-                valid_ids = [1062, 1149, 1156, 38, 1264]
-                if map_id in valid_ids:
-                    image = map_id
-                else:
-                    image = "default"
+                image = "default"
             name = map_name
             state = _("in ") + name
         return state, {"large_image": str(image), "large_text":  _(name)}
@@ -448,10 +314,7 @@ class GW2RPC:
         def readable_id(_id):
             _id = _id.split("_")
             dont_capitalize = ("of", "the", "in")
-            return " ".join([
-                x.capitalize() if x not in dont_capitalize else x for x in _id
-            ])
-
+            return " ".join([x.capitalize() if x not in dont_capitalize else x for x in _id])
         boss = self.find_closest_boss(map_info)
         if not boss:
             self.boss_timestamp = None
@@ -465,24 +328,9 @@ class GW2RPC:
         if self.last_boss != boss["id"]:
             self.boss_timestamp = int(time.time())
         self.last_boss = boss["id"]
-        return state, {
-            "large_image": boss["id"],
-            "large_text": name + " - {}".format(map_info["name"])
-        }
+        return state, {"large_image": boss["id"], "large_text": name + " - {}".format(map_info["name"])}
 
-    def get_activity(self, mumble_targets=None):
-        if not mumble_targets:
-            return None
-        
-        # In a multi-account scenario, pick the active one if possible
-        active, active_p = self.get_active_instance()
-        self.game = active if active else self.game
-        self.process = active_p if active_p else self.process
-        
-        if not self.game:
-            return None
-
-        # Helper functions
+    def get_activity(self):
         def get_region():
             world = api.world
             if world:
@@ -491,32 +339,53 @@ class GW2RPC:
                         return " [{}]".format(k)
             return ""
 
-        def get_closest_poi(map_info, continent_info):
-            region = map_info.get("region_id")
-            if config.disable_pois:
-                return None
-            if config.disable_pois_in_wvw and region == 7:
-                return None
-            return self.find_closest_point(map_info, continent_info)
+        def update_mumble_links():
+            all_links = self.get_mumble_links()
+            new_links = all_links.difference(self.mumble_links)
+            dead_links = self.mumble_links.difference(all_links)
+
+            for m, p1 in dead_links:
+                for o, p2 in self.mumble_objects:
+                    if o.mumble_link == m:
+                        o.close_map()
+                        self.mumble_objects.remove((o, p2))
+                        del o
+                self.mumble_links.remove((m, p1))
+
+            for m, p in new_links:
+                o = MumbleData(m)
+                if not o.memfile:
+                    o.create_map()
+                self.mumble_objects.append((o, p))
+                self.mumble_links.add((m, p))
+
+            if all_links and all_links == new_links:
+                if len(self.mumble_objects) > 0:
+                    self.game = self.mumble_objects[0][0]
+
+        update_mumble_links()
         active, active_p = self.get_active_instance()
         self.game = active if active else self.game
         self.process = active_p if active_p else self.process
-        data = self.game.get_mumble_data(process=active_p)
-        if not data:
-            return None
-        log.debug(f"DEBUG RAW MUMBLE DATA: {data}")
-        buttons = []
-        map_id = data.get("map_id", self.game.context.mapId)
-        is_commander = data.get("commander", False)
-        mount_index = data.get("mount_index", 0)
-        in_combat = data.get("in_combat", False)
-        copy_paste_url = None
-        point = None
-        try:
-            mount_index = data.get("mount_index", 0)
-            is_commander = data.get("commander", False)
-            map_id = data.get("map_id", self.game.context.mapId)
+        
+        if not self.game:
+            return self.in_character_selection()
             
+        data = self.game.get_mumble_data(process=active_p)
+        
+        # Se a memória estiver temporariamente vazia (ex: transição de mapa)
+        # Retorna a tela de loading sem destruir o cache da memória.
+        # Isso elimina os "piscões" na tela do Discord.
+        if not data or not data.get("name") or data.get("map_id", 0) == 0:
+            return self.in_character_selection()
+        
+        map_id = data.get("map_id", self.game.context.mapId)
+        mount_index = data.get("mount_index", 0)
+        is_commander = data.get("commander", False)
+        in_combat = data.get("in_combat", False)
+        point = None
+        
+        try:
             if self.last_map_info and map_id == self.last_map_info["id"]:
                 map_info = self.last_map_info
             else:
@@ -532,21 +401,18 @@ class GW2RPC:
                 tag = self.prev_char.guild_tag if self.prev_char else character.guild_tag
             self.prev_char = character
         except APIError:
-            log.error("API Error!")
             self.last_map_info = None
-            return None
-        except Exception as e:
-            log.error(f"Identity processing error: {e}")
-            return None
+            return self.in_character_selection()
+        except Exception:
+            return self.in_character_selection()
             
         state, map_asset = self.get_map_asset(map_info, mount_index=mount_index)
-
         tag = tag if config.display_tag else ""
+        
         try:
             if map_id in self.no_pois or "continent_id" not in map_info:
                 raise APIError(404)
-            if (self.last_continent_info
-                    and map_id == self.last_continent_info["id"]):
+            if (self.last_continent_info and map_id == self.last_continent_info["id"]):
                 continent_info = self.last_continent_info
             else:
                 continent_info = api.get_continent_info(map_info)
@@ -565,8 +431,8 @@ class GW2RPC:
         else:
             self.last_boss = None
             if self.last_continent_info:
-                point = get_closest_poi(map_info, continent_info)
-                if point:
+                point = self.find_closest_point(map_info, continent_info)
+                if point and not config.disable_pois:
                     map_asset["large_text"] += _(" near ") + point["name"]
         map_asset["large_text"] += get_region()
 
@@ -581,45 +447,11 @@ class GW2RPC:
             details = "{} {}".format(details, "⚔")
         small_text = "{} {} {}".format(_(character.race), _(character.profession), tag)
 
-        if config.announce_raid and is_commander and not self.commander_webhook_sent:
-            region = map_info.get("region_id")
-            if not config.disable_raid_announce_in_wvw or region != 7:
-                copy_paste_url = copy_paste_url or "https://gw2rpc.info"
-                chat_link = f"*{point['name']}: `{point['chat_link']}`*" if point else None
-                for u in config.webhooks:
-                    self.send_webhook(u, character.name, _(state), copy_paste_url, character.profession, chat_link)
-                self.commander_webhook_sent = True
-        if not is_commander and self.commander_webhook_sent:
-            self.commander_webhook_sent = False
-
         activity = {
             "state": _(state),
             "details": details,
-            "timestamps": {
-                'start': timestamp
-            },
-            "assets": {
-                **map_asset,
-                "small_image": small_image,
-                "small_text": small_text
-            },
-            "buttons": buttons
-        }
-        return activity
-
-    def in_character_selection(self):
-        activity = {
-            "state": _("in character selection") + " / " + _("loading screen"),
-            "details": _("Character Selection"),
-            "timestamps": {
-                'start': self.session_start_time
-            },
-            "assets": {
-                "large_image":
-                "default",
-                "large_text":
-                _("Character Selection")
-            },
+            "timestamps": {'start': timestamp},
+            "assets": {**map_asset, "small_image": small_image, "small_text": small_text},
             "buttons": []
         }
         return activity
@@ -641,8 +473,7 @@ class GW2RPC:
         for item in continent_info["points_of_interest"].values():
             if "name" not in item:
                 continue
-            distance = (item["coord"][0] - x_coord)**2 + (
-                item["coord"][1] - y_coord)**2
+            distance = (item["coord"][0] - x_coord)**2 + (item["coord"][1] - y_coord)**2
             if distance < lowest_distance:
                 lowest_distance = distance
                 point = item
@@ -653,8 +484,7 @@ class GW2RPC:
         x_coord, y_coord = self.convert_mumble_coordinates(map_info, position)
         closest = None
         for boss in self.registry["raids"][str(map_info["id"])]:
-            distance = math.sqrt((boss["coord"][0] - x_coord)**2 +
-                                 (boss["coord"][1] - y_coord)**2)
+            distance = math.sqrt((boss["coord"][0] - x_coord)**2 + (boss["coord"][1] - y_coord)**2)
             if "radius" in boss and distance < boss["radius"]:
                 if "height" in boss:
                     if position.z < boss["height"]:
@@ -668,189 +498,91 @@ class GW2RPC:
         if fractal["id"] == map_id:
             try:
                 for boss in fractal["bosses"]:
-                    distance = math.sqrt((boss["coord"][0] - position.x)**2 +
-                                         (boss["coord"][1] - position.y)**2)
-                    
+                    distance = math.sqrt((boss["coord"][0] - position.x)**2 + (boss["coord"][1] - position.y)**2)
                     if distance <= boss["radius"]:
                         if (len(boss["coord"]) > 2 and "height" in boss
                          and position.z >= boss["coord"][2] and position.z <= boss["coord"][2] + boss["height"]) or len(boss["coord"]) <= 2:
                             state = _("fighting ") + _(boss["name"]) + " " + _("in ") + _(fractal["name"])
-                            if self.last_boss != boss["name"]:
-                                self.boss_timestamp = int(time.time())
                             self.last_boss = boss["name"]
                             return state, boss["name"]
                 else:
-                    self.boss_timestamp = None
                     self.last_boss = None
                     state = _("in ") + _("fractal") + ": " + _(fractal["name"])
             except KeyError:
-                self.boss_timestamp = None
                 self.last_boss = None
                 state = _("in ") + _("fractal") + ": " + _(fractal["name"])
         return state, None
 
-    def send_webhook(self, url, name, map, website_url, profession, poi=None):
-        timestamp = datetime.now()
-        ts = time.time()
-        utc_offset = (datetime.fromtimestamp(ts) -
-              datetime.utcfromtimestamp(ts)).total_seconds()
-        timestamp = (timestamp - timedelta(seconds=utc_offset)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        logo_url = "https://gw2rpc.info/static/img/logo.png"
-        profession_url = f"https://gw2rpc.info/static/img/professions/prof_{profession.lower()}.png"
-
-        data = {
-            "username": "GW2RPC",
-            "avatar_url": logo_url
-        }
-        data["embeds"] = [
-            {
-                "author": {
-                    "name": _("GW2RPC Raid Announcer"),
-                    "icon_url": profession_url,
-                    "url": "https://gw2rpc.info"
-                },
-                "thumbnail": {
-                    "url": "https://gw2rpc.info/static/img/professions/commander_tag.png"
-                },
-                "footer": {
-                    "text": "by GW2RPC https://gw2rpc.info",
-                    "icon_url": logo_url
-                },
-                "title" : f"{name} " + _("tagged up") + f" {map}",
-                "url": website_url,
-                "color": "12660011",
-                "timestamp": timestamp,
-                "fields": [
-                    {
-                        "name": _("Copy and paste the following to join"),
-                        "value": f"`/sqjoin {name}`"
-                    }
-                ]
-            }
-        ]   
-        if poi:  
-            data["embeds"][0]["fields"].append({"name": _("Closest PoI"), "value": f"{poi}"})
-
+    def is_gw2_running(self):
         try:
-            result = requests.post(url, json = data)
-            result.raise_for_status()
-        except requests.exceptions.HTTPError as err:
-            log.error(err)
-        except:
-            log.error(f"Invalid webhook url: {url}")
+            for process in psutil.process_iter(attrs=['name', 'cmdline']):
+                name = str(process.info.get('name', '')).lower()
+                cmdline = process.info.get('cmdline') or []
+                cmd_str = " ".join(cmdline).lower()
+                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
+                    return process
+        except psutil.NoSuchProcess:
+            pass
+        return None
 
     def main_loop(self):
-        def update_gw2_process():
-            shutdown = False
-            if self.process:
-                if self.process.is_running():
-                    return
-                else:
-                    # FORÇA SHUTDOWN ASSIM QUE O JOGO FECHAR
-                    shutdown = True
-            try:
-                names = []
-                for process in psutil.process_iter(attrs=['name', 'cmdline']):
-                    name = str(process.info.get('name', '')).lower()
-                    cmdline = process.info.get('cmdline') or []
-                    cmd_str = " ".join(cmdline).lower()
-                    names.append(name)
-                    
-                    if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
-                        log.debug(f"Found GW2 process: {name}")
-                        self.process = process
-                        return
-                else:  
-                    log.debug(f"GW2 process not found, List of processes: {names}")
-            except psutil.NoSuchProcess:
-                log.debug("A process exited while iterating over the process list.")
-                pass
-
-            if shutdown:
-                self.shutdown()
-            self.process = None
-            raise GameNotRunningError
-
-        def check_for_running_rpc():
-            count = 0
-            try:
-                for process in psutil.process_iter(attrs=['name']):
-                    name = process.info['name']
-                    if name == "gw2rpc.exe":
-                        count += 1
-                    if count > 2:
-                        break
-                else:
-                    return
-            except psutil.NoSuchProcess:
-                log.debug("A process exited while iterating over the process list.")
-                pass    
-            log.info("Another gw2rpc process is already running, exiting.")
-            if self.sdk.app:
-                self.sdk.activity_manager.clear_activity(self.sdk.callback)
-                self.sdk.close()
-                log.debug("Killing SDK")
-            self.shutdown()
-
         try:
-            check_for_running_rpc()
             self.create_systray()
-            
-            while self.running:
+            while True:
                 try:
-                    # Comprehensive process and link update
-                    self.update_mumble_links()
-                    
                     if not self.process:
+                        proc = self.is_gw2_running()
+                        if proc:
+                            # Força o Python a esperar o jogo/Proton ser o criador nativo do arquivo de memória.
+                            # Se o arquivo não existe ainda, gera erro para tentar novamente em 5s.
+                            if not os.path.exists("/dev/shm/MumbleLink"):
+                                raise GameNotRunningError
+                            self.process = proc
+                        else:
+                            raise GameNotRunningError
+                    elif not self.process.is_running():
+                        self.process = None
                         raise GameNotRunningError
 
                     self.interval = 1 / 2
-                    data = None
-                    
-                    if self.mumble_objects:
-                        try:
-                            data = self.get_activity(self.mumble_objects)
-                        except requests.exceptions.ConnectionError:
-                            raise GameNotRunningError
-                        except Exception as e:
-                            log.error(f"Error in get_activity: {e}")
-                    
-                    if not data:
-                        data = self.in_character_selection()
-                    
+                    try:
+                        data = self.get_activity()
+                    except requests.exceptions.ConnectionError:
+                        self.mumble_objects = []
+                        raise GameNotRunningError
+                    except Exception as e:
+                        time.sleep(2)
+                        continue
+
                     if not self.sdk.app:
                         self.sdk.start()
-                    
-                    if self.sdk.app:
+
+                    if data:
                         try:
-                            self.sdk.set_activity(data)
-                            self.sdk.app.run_callbacks()
-                        except Exception as e:
-                            log.debug(f"Erro no SDK: {e}")
-                            self.sdk.close()
-                    
+                            if self.sdk.app:
+                                self.sdk.set_activity(data)
+                                try:
+                                    self.sdk.app.run_callbacks()
+                                except: pass
+                        except BrokenPipeError:
+                            raise GameNotRunningError
                     self.timeticks = (self.timeticks + 1) % 1000
-                    time.sleep(2) # Normal loop interval
-                    
+
                 except GameNotRunningError:
                     self.interval = 5
                     if self.game:
                         self.game.close_map()
                     if self.sdk.app:
-                        try:
-                            self.sdk.set_activity({}) # Send empty to clear
-                            self.sdk.activity_manager.clear_activity(self.sdk.callback)
-                            if hasattr(self.sdk.app, 'run_callbacks'):
-                                self.sdk.app.run_callbacks()
-                            time.sleep(0.5) # Small flush delay
-                        except:
-                            pass
+                        self.sdk.activity_manager.clear_activity(self.sdk.callback)
+                        try: self.sdk.app.run_callbacks()
+                        except: pass
                         self.sdk.close()
+                    
+                    # Limpa a memória apenas se o jogo realmente estiver fechado
+                    if not self.is_gw2_running():
+                        if os.path.exists("/dev/shm/MumbleLink"):
+                            try: os.remove("/dev/shm/MumbleLink")
+                            except: pass
                     time.sleep(self.interval)
         except Exception as e:
-            log.critical(f"GW2RPC v{VERSION} has crashed", exc_info=e)
-            create_msgbox(
-                "GW2 Rich Presence has crashed.\nPlease check your "
-                "log file and report this to the author!",
-                code=16)
             self.shutdown()
