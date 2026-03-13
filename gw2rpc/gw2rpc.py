@@ -63,11 +63,15 @@ def check_single_instance():
 _lock = check_single_instance()
 import gettext
 
+import logging
 from .api import APIError, api   
+
+log = logging.getLogger()
 from .character import Character
 from .mumble import MumbleData
 from .settings import config
 from .sdk import DiscordSDK
+from .registry_fallback import FALLBACK_REGISTRY
 
 def resource_path(relative_path):
     base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
@@ -125,18 +129,21 @@ def create_msgbox(description, *, title='GW2RPC', code=0):
 class GW2RPC:
     def __init__(self):
         def fetch_registry():
+            registry = FALLBACK_REGISTRY.copy()
             url = GW2RPC_BASE_URL + "registry"
             try:
-                res = requests.get(url, headers=HEADERS)
-            except:
-                return None
-            if res.status_code != 200:
-                return None
-            return res.json()
+                res = requests.get(url, headers=HEADERS, timeout=5)
+                if res.status_code == 200:
+                    registry.update(res.json())
+                else:
+                    log.warning(f"Registry fetch failed (code {res.status_code}), using fallback.")
+            except Exception as e:
+                log.warning(f"Registry fetch failed: {e}, using fallback.")
+            return registry
 
         def fetch_support_invite():
             try:
-                return requests.get(GW2RPC_BASE_URL + "support", headers=HEADERS).json()["support"]
+                return requests.get(GW2RPC_BASE_URL + "support", headers=HEADERS, timeout=5).json()["support"]
             except:
                 return None
 
@@ -155,8 +162,8 @@ class GW2RPC:
         self.mumble_objects = []
         self.timeticks = 0
         self.prev_char = None
-        self.interval = 1 / 2
         self.session_start_time = int(time.time())
+        self.interval = 1 / 2
 
     def get_systray_menu(self):
         menu_options = ((_("About"), None, self.about), )
@@ -184,20 +191,21 @@ class GW2RPC:
     def get_mumble_links(self):
         mumble_links = set()
         try:
-            for process in psutil.process_iter():
-                pinfo = process.as_dict(attrs=['pid', 'name', 'cmdline'])
+            for process in psutil.process_iter(attrs=['pid', 'name', 'cmdline']):
+                pinfo = process.info
                 name = str(pinfo.get('name', '')).lower()
                 cmdline = pinfo.get('cmdline') or []
                 cmd_str = " ".join(cmdline).lower()
 
-                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
+                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2"):
+                    # Use PID as key to ensure stability in sets
                     try:
-                        mumble_links.add((cmdline[cmdline.index('-mumble') + 1], process))
-                    except ValueError:
-                        mumble_links.add(("MumbleLink", process))
-                    except AttributeError:
-                        continue
-        except psutil.NoSuchProcess:
+                        mumble_link_name = cmdline[cmdline.index('-mumble') + 1]
+                    except (ValueError, IndexError):
+                        mumble_link_name = "MumbleLink"
+                    
+                    mumble_links.add((mumble_link_name, pinfo['pid']))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
         return mumble_links
 
@@ -206,7 +214,7 @@ class GW2RPC:
         for m, p in self.mumble_links:
             o = MumbleData(m)
             if not o.memfile:
-                o.create_map()
+                o.create_map(pid=p)
             mumble_objects.append((o, p))
         return mumble_objects
 
@@ -216,8 +224,8 @@ class GW2RPC:
                 self.sdk.activity_manager.clear_activity(self.sdk.callback)
                 self.sdk.app.run_callbacks()
                 self.sdk.close()
-            if os.path.exists("/dev/shm/MumbleLink"):
-                os.remove("/dev/shm/MumbleLink")
+            # if os.path.exists("/dev/shm/MumbleLink"):
+            #     os.remove("/dev/shm/MumbleLink")
         except: pass
         if platform.system() != "Windows":
             try:
@@ -231,7 +239,8 @@ class GW2RPC:
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
             except: pass
-        os._exit(0)
+        import sys
+        sys.exit(0)
 
     def about(self, _): pass
     def join_guild(self, _): pass
@@ -239,8 +248,8 @@ class GW2RPC:
 
     def get_active_instance(self):
         for o, p in self.mumble_objects:
-            o.get_mumble_data(process=p)
-            if o.in_focus:
+            data = o.get_mumble_data(process=p)
+            if data:
                 return (o, p)
         return None, None
 
@@ -330,50 +339,25 @@ class GW2RPC:
         self.last_boss = boss["id"]
         return state, {"large_image": boss["id"], "large_text": name + " - {}".format(map_info["name"])}
 
-    def get_activity(self):
+    def get_activity_data(self, data):
         def get_region():
             world = api.world
             if world:
+                from .settings import worlds
                 for k, v in worlds.items():
                     if world in v:
                         return " [{}]".format(k)
             return ""
 
-        def update_mumble_links():
-            all_links = self.get_mumble_links()
-            new_links = all_links.difference(self.mumble_links)
-            dead_links = self.mumble_links.difference(all_links)
+        log.debug(f"MumbleLink parsed data: {data}")
 
-            for m, p1 in dead_links:
-                for o, p2 in self.mumble_objects:
-                    if o.mumble_link == m:
-                        o.close_map()
-                        self.mumble_objects.remove((o, p2))
-                        del o
-                self.mumble_links.remove((m, p1))
-
-            for m, p in new_links:
-                o = MumbleData(m)
-                if not o.memfile:
-                    o.create_map()
-                self.mumble_objects.append((o, p))
-                self.mumble_links.add((m, p))
-
-            if all_links and all_links == new_links:
-                if len(self.mumble_objects) > 0:
-                    self.game = self.mumble_objects[0][0]
-
-        update_mumble_links()
-        active, active_p = self.get_active_instance()
-        self.game = active if active else self.game
-        self.process = active_p if active_p else self.process
         
-        if not self.game:
-            return self.in_character_selection()
-            
-        data = self.game.get_mumble_data(process=active_p)
-        
+        # Correção: Identifica se a memória está vazia (jogo não carregou o mapa ainda)
+        # Em vez de travar no vazio para sempre, ele força a recriação da memória e exibe a tela de carregamento.
         if not data or not data.get("name") or data.get("map_id", 0) == 0:
+            if self.game:
+                self.game.close_map()
+                self.game.create_map()
             return self.in_character_selection()
         
         map_id = data.get("map_id", self.game.context.mapId)
@@ -381,27 +365,51 @@ class GW2RPC:
         is_commander = data.get("commander", False)
         in_combat = data.get("in_combat", False)
         point = None
-        
         try:
             if self.last_map_info and map_id == self.last_map_info["id"]:
                 map_info = self.last_map_info
             else:
-                map_info = api.get_map_info(map_id)
-                self.last_map_info = map_info
+                try:
+                    map_info = api.get_map_info(map_id)
+                    self.last_map_info = map_info
+                except:
+                    log.warning(f"API get_map_info failed for map {map_id}. Using fallback.")
+                    map_info = {"id": map_id, "name": f"Map {map_id}", "type": "Default"}
+                    self.last_map_info = None
 
-            if (not self.prev_char) or ((self.prev_char and data["name"] != self.prev_char.name)) or (self.timeticks == 0):
-                character = Character(data, self.registry)
-                tag = character.guild_tag
-            else:
+            # Track character changes for duration resets
+            # We ONLY reset if we explicitly see a NEW different name.
+            # If name is temporarily None or same, we keep the old timestamp.
+            character_name = data.get("name")
+            if character_name and self.prev_char and self.prev_char.name != character_name:
+                self.session_start_time = int(time.time())
+            elif character_name and not self.prev_char:
+                # Initial detection
+                self.session_start_time = int(time.time())
+            
+            # Map tracking (without reset)
+            self.last_map_id = data.get("map_id")
+            
+            try:
+                if (not self.prev_char) or ((self.prev_char and data["name"] != self.prev_char.name)) or (self.timeticks == 0):
+                    character = Character(data, self.registry)
+                    tag = character.guild_tag
+                else:
+                    character = Character(data, self.registry, query_guild=False)
+                    character.guild_tag = self.prev_char.guild_tag
+                    tag = self.prev_char.guild_tag if self.prev_char else character.guild_tag
+                self.prev_char = character
+            except Exception as e:
+                log.warning(f"Character object creation failed: {e}")
+                # Create a bare-bones character object if needed, but Character.__init__ is already resilient now.
+                # If it still fails, we have self.prev_char fallback or we create once more with no API.
                 character = Character(data, self.registry, query_guild=False)
-                character.guild_tag = self.prev_char.guild_tag
-                tag = self.prev_char.guild_tag if self.prev_char else character.guild_tag
-            self.prev_char = character
-        except APIError:
-            self.last_map_info = None
-            return None # Ignora falhas da API do jogo em vez de piscar tela
-        except Exception:
-            return None # Ignora erros gerais de rede em vez de piscar tela
+                tag = ""
+                self.prev_char = character
+
+        except Exception as e:
+            log.error(f"Error in activity data preparation: {e}", exc_info=True)
+            return self.in_character_selection()
             
         state, map_asset = self.get_map_asset(map_info, mount_index=mount_index)
         tag = tag if config.display_tag else ""
@@ -441,8 +449,17 @@ class GW2RPC:
         else:  
             small_image = character.profession_icon
         if in_combat:
-            details = "{} {}".format(details, "⚔")
-        small_text = "{} {} {}".format(_(character.race), _(character.profession), tag)
+            # Add swords to state for better visibility
+            state = "{} \u2694\uFE0F".format(state)
+            log.debug(f"COMBAT DETECTED: Added swords to state for {character.name}")
+        
+        status_suffix = ""
+        if in_combat:
+            status_suffix = " / " + _("In Combat")
+        elif mount_index:
+            status_suffix = " / " + _("Mounted")
+            
+        small_text = "{} {} {}{}".format(_(character.race), _(character.profession), tag, status_suffix)
 
         activity = {
             "state": _(state),
@@ -502,69 +519,93 @@ class GW2RPC:
                             state = _("fighting ") + _(boss["name"]) + " " + _("in ") + _(fractal["name"])
                             self.last_boss = boss["name"]
                             return state, boss["name"]
-                else:
-                    self.last_boss = None
-                    state = _("in ") + _("fractal") + ": " + _(fractal["name"])
             except KeyError:
                 self.last_boss = None
                 state = _("in ") + _("fractal") + ": " + _(fractal["name"])
         return state, None
 
-    def is_gw2_running(self):
-        try:
-            for process in psutil.process_iter(attrs=['name', 'cmdline']):
-                name = str(process.info.get('name', '')).lower()
-                cmdline = process.info.get('cmdline') or []
-                cmd_str = " ".join(cmdline).lower()
-                if name in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2") or "gw2-64.exe" in cmd_str or "gw2.exe" in cmd_str:
-                    return process
-        except psutil.NoSuchProcess:
-            pass
-        return None
-
     def main_loop(self):
         try:
+            log.info("Starting main loop!")
             self.create_systray()
+            log.info("Systray created, entering while loop!")
+            
             while True:
                 try:
-                    if not self.process:
-                        proc = self.is_gw2_running()
-                        if proc:
-                            if not os.path.exists("/dev/shm/MumbleLink"):
-                                raise GameNotRunningError
-                            self.process = proc
-                        else:
-                            raise GameNotRunningError
-                    elif not self.process.is_running():
+                    # 1. Update Game Process
+                    if not self.process or not self.process.is_running():
                         self.process = None
+                        # Try to find process
+                        for p in psutil.process_iter(attrs=['pid', 'name']):
+                            if str(p.info.get('name', '')).lower() in ("gw2-64.exe", "gw2.exe", "gw2-64", "gw2"):
+                                self.process = p
+                                break
+                    
+                    if not self.process:
                         raise GameNotRunningError
+                    
+                    # 2. Update Mumble Links (throttle this)
+                    now = time.time()
+                    if not hasattr(self, '_last_link_update') or now - self._last_link_update > 5:
+                        self.mumble_links = self.get_mumble_links()
+                        # Update mumble_objects based on current links
+                        # (Simple version: keep existing if still valid, add new)
+                        current_pids = {p for m, p in self.mumble_links}
+                        self.mumble_objects = [(o, pid) for o, pid in self.mumble_objects if pid in current_pids]
+                        
+                        existing_pids = {pid for o, pid in self.mumble_objects}
+                        for m, pid in self.mumble_links:
+                            if pid not in existing_pids:
+                                o = MumbleData(m)
+                                o.create_map(pid=pid)
+                                if o.memfile:
+                                    self.mumble_objects.append((o, pid))
+                        self._last_link_update = now
 
-                    self.interval = 1 / 2
-                    try:
-                        data = self.get_activity()
-                    except requests.exceptions.ConnectionError:
-                        self.mumble_objects = []
-                        raise GameNotRunningError
-                    except Exception as e:
+                    if not self.mumble_objects:
                         time.sleep(2)
                         continue
 
+                    # 3. Get Activity
+                    self.interval = 1 / 2
+                    active_o, active_pid = self.get_active_instance()
+                    
+                    if not active_o:
+                        data = self.in_character_selection()
+                    else:
+                        mumble_data = active_o.get_mumble_data(process=active_pid)
+                        if not mumble_data or not mumble_data.get("name") or mumble_data.get("map_id", 0) == 0:
+                            data = self.in_character_selection()
+                        else:
+                            # Use our internal game object for coordinates/POI detection
+                            self.game = active_o
+                            data = self.get_activity_data(mumble_data)
+
+                    # 4. Update Discord
                     if not self.sdk.app:
                         self.sdk.start()
 
-                    if data is not None:
+                    if data:
                         try:
                             if self.sdk.app:
-                                self.sdk.set_activity(data)
+                                log.debug(f"UPDATING DISCORD: {data}")
+                                self.sdk.set_activity(data, pid=active_pid)
                                 try:
                                     self.sdk.app.run_callbacks()
                                 except: pass
+                            else:
+                                log.warning("SDK App is not initialized, cannot update Discord.")
                         except BrokenPipeError:
+                            log.error("BrokenPipeError in main_loop Discord update")
                             raise GameNotRunningError
+                    
                     self.timeticks = (self.timeticks + 1) % 1000
+                    time.sleep(self.interval)
 
                 except GameNotRunningError:
                     self.interval = 5
+                    self.mumble_objects = []
+                    self.mumble_links = set()
                     if self.game:
                         self.game.close_map()
                     if self.sdk.app:
@@ -572,11 +613,11 @@ class GW2RPC:
                         try: self.sdk.app.run_callbacks()
                         except: pass
                         self.sdk.close()
-                    
-                    if not self.is_gw2_running():
-                        if os.path.exists("/dev/shm/MumbleLink"):
-                            try: os.remove("/dev/shm/MumbleLink")
-                            except: pass
+                    # if os.path.exists("/dev/shm/MumbleLink"):
+                    #     try: os.remove("/dev/shm/MumbleLink")
+                    #     except: pass
                     time.sleep(self.interval)
         except Exception as e:
+            import logging
+            logging.getLogger("").error(f"Fatal error in main_loop: {e}", exc_info=True)
             self.shutdown()

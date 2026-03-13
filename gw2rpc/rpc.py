@@ -49,14 +49,10 @@ class DiscordRPC:
                 '/tmp/discord-ipc-0'
             ]
             self.ipc_path = next((p for p in paths if os.path.exists(p)), paths[0])
-            try:
-                self.loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self.loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self.loop)
+            self.loop = None
         else:
             self.ipc_path = r'\\?\pipe\discord-ipc-0'
-            self.loop = asyncio.ProactorEventLoop()
+            self.loop = None
         
         self.sock_reader: asyncio.StreamReader = None
         self.sock_writer: asyncio.StreamWriter = None
@@ -72,7 +68,9 @@ class DiscordRPC:
             data = await asyncio.wait_for(self.sock_reader.read(1024), timeout=1.0)
             if data:
                 code, length = struct.unpack('<ii', data[:8])
-                log.debug(f'OP Code: {code}; Length: {length}\nResponse:\n{json.loads(data[8:].decode("utf-8"))}\n')
+                log.info(f'Discord Response: OP {code}; Length: {length}')
+                # Keep payload as debug to avoid clutter
+                log.debug(f'Response payload: {json.loads(data[8:].decode("utf-8"))}')
         except asyncio.TimeoutError:
             log.debug("Discord didn't respond to RPC command (timeout)")
         except Exception as e:
@@ -95,7 +93,7 @@ class DiscordRPC:
         self.send_data(0, {'v': 1, 'client_id': self.client_id})
         data = await self.sock_reader.read(1024)
         code, length = struct.unpack('<ii', data[:8])
-        log.debug(f'OP Code: {code}; Length: {length}\nResponse:\n{json.loads(data[8:].decode("utf-8"))}\n')
+        log.info(f'Discord Handshake: OP {code}; Length: {length}')
 
     def send_rich_presence(self, activity, pid):
         current_time = time.time()
@@ -122,28 +120,38 @@ class DiscordRPC:
     def close(self):
         try:
             self.send_data(2, {'v': 1, 'client_id': self.client_id})
-            async def finish():
-                await self.sock_writer.drain()
-            self.loop.run_until_complete(finish())
+            if self.loop and not self.loop.is_closed():
+                async def finish():
+                    if self.sock_writer:
+                        try:
+                            await self.sock_writer.drain()
+                        except: pass
+                self.loop.run_until_complete(finish())
         except:
             pass
         self.last_pid = None
         self.running = False
         if self.sock_writer:
-            self.sock_writer.close()
-        self.sock_writer: asyncio.StreamWriter = None
-        if self.loop.is_running():
-            pass # Non-blocking loop
-        else:
             try:
-                self.loop.close()
-            except:
-                pass
+                self.sock_writer.close()
+            except: pass
+        self.sock_writer = None
+        
+        # Don't aggressively close the loop if we want to reconnect later
+        self.loop = None
 
     def start(self):
-        if platform.system() != "Linux":
+        if platform.system() == "Linux":
+            try:
+                self.loop = asyncio.get_event_loop()
+                if self.loop.is_closed():
+                    self.loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(self.loop)
+            except RuntimeError:
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+        else:
             self.loop = asyncio.ProactorEventLoop()
         
-        # self.loop já deve estar definido no __init__ para Linux
         self.running = True
         self.loop.run_until_complete(self.handshake())

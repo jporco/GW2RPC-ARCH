@@ -1,4 +1,8 @@
+import logging
 from .api import api
+
+log = logging.getLogger()
+
 
 PROFESSIONS = {
     "1": "Guardian",
@@ -72,7 +76,11 @@ class Character:
         self.__api_info = None
 
         if query_guild and api._authenticated:
-            self.__api_info = api.get_character(self.name)
+            try:
+                self.__api_info = api.get_character(self.name)
+            except Exception as e:
+                log.debug(f"API character lookup failed for {self.name}: {e}")
+                self.__api_info = None
 
         self.profession = self.get_elite_spec()
         if self.profession:
@@ -81,6 +89,8 @@ class Character:
         else:
             self.profession = ""
             self.profession_icon = "gw2rpclogo"
+        
+        # Guild tag lookup is already inside a try block in _get_guild_tag
         self.guild_tag = self._get_guild_tag()
 
     def get_elite_spec(self):

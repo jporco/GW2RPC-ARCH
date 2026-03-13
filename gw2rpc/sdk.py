@@ -48,7 +48,7 @@ class DiscordSDK:
             except:
                 pass
 
-    def set_activity(self, a):
+    def set_activity(self, a, pid=None):
         if not self.app:
             return
 
@@ -88,10 +88,9 @@ class DiscordSDK:
 
         if platform.system() == "Linux":
             try:
-                import psutil
-                # Try to get game PID or fallback to a dummy PID if needed
-                pid = os.getpid() # Default fallback
-                self.rpc.send_rich_presence(activity, pid)
+                # Use provided pid or fallback to current rpc pid
+                target_pid = pid if pid else os.getpid()
+                self.rpc.send_rich_presence(activity, target_pid)
             except Exception as e:
                 log.error(f"Erro ao enviar Rich Presence (Linux): {e}")
         else:
