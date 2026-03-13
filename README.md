@@ -51,7 +51,7 @@ Right-click Guild Wars 2 in your Steam Library -> **Properties** -> **General** 
 Copy and paste the exact line below:
 
 ```text
-(/home/porco/GW2RPC_fork/run_rpc.sh & MUMBLE_LINK_FILE=/dev/shm/MumbleLink 
+/home/user/GW2RPC_fork/run_rpc.sh & MUMBLE_LINK_FILE=/dev/shm/MumbleLink 
 ```
 
 **What does this do?**
